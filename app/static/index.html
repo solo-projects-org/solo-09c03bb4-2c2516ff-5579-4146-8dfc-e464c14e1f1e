@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>气象测站身份统一数仓</title>
+<style>
+  :root { --blue:#1f5fa8; --bg:#f4f6f9; --line:#d9dee5; --red:#c0392b; --green:#1e7e34; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+         background:var(--bg); color:#222; font-size:14px; }
+  header { background:var(--blue); color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:19px; }
+  header .meta { font-size:12px; opacity:.85; margin-top:4px; }
+  nav { display:flex; gap:4px; background:#fff; border-bottom:1px solid var(--line); padding:0 16px; }
+  nav button { border:0; background:none; padding:13px 20px; font-size:14px; cursor:pointer;
+               border-bottom:3px solid transparent; color:#555; }
+  nav button.active { color:var(--blue); border-bottom-color:var(--blue); font-weight:600; }
+  main { padding:20px 24px; max-width:1280px; margin:0 auto; }
+  .panel { display:none; } .panel.active { display:block; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:18px; }
+  .card h2 { margin:0 0 12px; font-size:16px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top; }
+  th { background:#eef2f7; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; white-space:nowrap; }
+  .tag.cur { background:#e3f2e8; color:var(--green); }
+  .tag.old { background:#fdecea; color:var(--red); }
+  .tag.amb { background:#fff3cd; color:#8a6d00; font-weight:700; }
+  .muted { color:#888; font-size:12px; }
+  button.act { background:var(--blue); color:#fff; border:0; border-radius:6px; padding:8px 16px; cursor:pointer; }
+  button.act:disabled { background:#9db4cf; cursor:not-allowed; }
+  button.ghost { background:#fff; border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
+  input[type=text], input[type=number], select { padding:7px 9px; border:1px solid var(--line);
+     border-radius:6px; font-size:13px; min-width:160px; }
+  .msg { padding:10px 14px; border-radius:6px; margin-bottom:14px; display:none; white-space:pre-wrap; }
+  .msg.ok { background:#e3f2e8; color:var(--green); display:block; }
+  .msg.err { background:#fdecea; color:var(--red); display:block; }
+  .small { font-size:12px; }
+  .group-box { border:1px dashed var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; }
+  code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
+  .stat { display:inline-block; background:#eef2f7; border-radius:6px; padding:6px 12px; margin-right:8px; }
+  .stat b { font-size:16px; color:var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <h1>气象测站身份统一数仓</h1>
+  <div class="meta">统一号永不复用 · 合并/拆分保留完整沿革 · 观测保留接纳时身份 · 总库上限 100 站
+    <span id="verBadge"></span></div>
+</header>
+<nav>
+  <button data-tab="state" class="active">身份总览与分组调整</button>
+  <button data-tab="query">新旧号查询</button>
+  <button data-tab="obs">观测入仓与查询</button>
+  <button data-tab="ops">操作沿革</button>
+</nav>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <!-- ========== 身份总览 ========== -->
+  <section id="panel-state" class="panel active">
+    <div class="card">
+      <h2>上传来源站 CSV</h2>
+      <p class="muted">表头：来源, 源站号, 站名（支持 UTF-8/GBK；也接受 source/source_station_id/name 英文表头）。
+        新来源站自动分配独立统一号；重复来源站站名一致则跳过。</p>
+      <div class="row">
+        <input type="file" id="stationFile" accept=".csv">
+        <button class="act" onclick="uploadStations()">上传并分配统一号</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>当前身份状态
+        <span class="muted" id="stateStat"></span>
+        <button class="ghost" style="float:right" onclick="loadState()">刷新</button>
+      </h2>
+      <table id="groupTable"><thead><tr>
+        <th>选择归并</th><th>统一号</th><th>来源站（来源 / 源站号 / 站名）</th><th>操作</th>
+      </tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:12px">
+        <button class="act" onclick="mergeSelected()">归并勾选的现站（≥2 个）</button>
+      </div>
+    </div>
+
+    <div class="card" id="splitCard" style="display:none">
+      <h2>拆分统一号 <span id="splitUid"></span></h2>
+      <p class="muted">为每个来源站填写新分组编号（从 1 开始的整数，至少 2 组），提交后每个新组获得全新统一号。</p>
+      <table id="splitTable"><thead><tr><th>来源 / 源站号 / 站名</th><th>新分组编号</th></tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:10px">
+        <button class="act" onclick="submitSplit()">提交拆分</button>
+        <button class="ghost" onclick="cancelSplit()">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 查询 ========== -->
+  <section id="panel-query" class="panel">
+    <div class="card">
+      <h2>按统一号查询（含已退役旧号）</h2>
+      <div class="row">
+        <input type="number" id="qUid" placeholder="输入统一号（旧号/新号均可）">
+        <button class="act" onclick="queryUnified()">查询当前归属</button>
+      </div>
+      <div id="qUnifiedOut"></div>
+    </div>
+    <div class="card">
+      <h2>按来源站查询（旧站号追溯）</h2>
+      <div class="row">
+        <input type="text" id="qSource" placeholder="来源，如 CMA">
+        <input type="text" id="qSid" placeholder="源站号，如 58362">
+        <button class="act" onclick="querySource()">查询统一号沿革</button>
+      </div>
+      <div id="qSourceOut"></div>
+    </div>
+    <div class="card">
+      <h2>统一号沿革图</h2>
+      <div class="row">
+        <input type="number" id="lineageUid" placeholder="统一号">
+        <button class="ghost" onclick="showLineage()">查看来龙去脉</button>
+      </div>
+      <div id="lineageOut"></div>
+    </div>
+  </section>
+
+  <!-- ========== 观测 ========== -->
+  <section id="panel-obs" class="panel">
+    <div class="card">
+      <h2>上传观测 CSV 入仓</h2>
+      <p class="muted">表头：来源, 源站号, UTC时刻, 温度（时刻必须带时区，如 2026-11-16T00:00:00Z）。
+        整批按<b>当前同一身份状态</b>入仓；任何一行失败整批拒绝、不留半批。</p>
+      <div class="row">
+        <input type="file" id="obsFile" accept=".csv">
+        <button class="act" onclick="ingestObs()">整批入仓</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>观测列表（逐条显示当前归属）</h2>
+      <div class="row">
+        <input type="text" id="fSource" placeholder="来源过滤（可选）">
+        <input type="text" id="fSid" placeholder="源站号过滤（可选）">
+        <input type="number" id="fUid" placeholder="当前统一号过滤（可选）">
+        <button class="act" onclick="loadObs()">查询</button>
+      </div>
+      <table id="obsTable" style="margin-top:12px"><thead><tr>
+        <th>批次</th><th>来源 / 源站号</th><th>UTC 时刻</th><th>温度</th>
+        <th>接纳时统一号</th><th>当前统一号</th><th>身份变化</th><th>入仓状态版本</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- ========== 沿革 ========== -->
+  <section id="panel-ops" class="panel">
+    <div class="card">
+      <h2>操作沿革（重启后保留）</h2>
+      <table id="opsTable"><thead><tr>
+        <th>#</th><th>类型</th><th>时间 (UTC)</th><th>版本变化</th><th>详情</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+
+<script>
+let STATE = null;
+const $ = id => document.getElementById(id);
+function showMsg(text, ok) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "err");
+  window.scrollTo(0, 0);
+}
+function clearMsg() { $("msg").className = "msg"; }
+
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    if (resp.status === 409) { showMsg("⚠ " + (data.error || "页面状态过期") + "\n已自动刷新身份状态。", false); loadState(); }
+    else throw new Error(data.error || ("HTTP " + resp.status));
+    return null;
+  }
+  return data;
+}
+function postJSON(url, body) {
+  return api(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function membersText(m) {
+  return m.map(x => `<div class="small">${esc(x.source)} / <code>${esc(x.source_station_id)}</code> / ${esc(x.name)}</div>`).join("");
+}
+
+async function loadState() {
+  STATE = await api("/api/state");
+  if (!STATE) return;
+  $("verBadge").textContent = "｜身份状态 v" + STATE.version;
+  $("stateStat").innerHTML =
+    `<span class="stat">来源站 <b>${STATE.source_station_count}</b>/${STATE.cap}</span>` +
+    `<span class="stat">当前统一站 <b>${STATE.current_group_count}</b></span>`;
+  const tb = $("groupTable").querySelector("tbody");
+  tb.innerHTML = STATE.groups.map(g => `
+    <tr>
+      <td><input type="checkbox" class="mergeCk" value="${g.unified_id}"></td>
+      <td><b>${g.unified_id}</b> <span class="tag cur">当前</span></td>
+      <td>${membersText(g.members)}</td>
+      <td><button class="ghost" onclick="openSplit(${g.unified_id})">拆分</button>
+          <button class="ghost" onclick="quickLineage(${g.unified_id})">沿革</button></td>
+    </tr>`).join("");
+}
+
+async function uploadStations() {
+  clearMsg();
+  const f = $("stationFile").files[0];
+  if (!f) return showMsg("请先选择 CSV 文件", false);
+  const fd = new FormData();
+  fd.append("file", f);
+  if (STATE) fd.append("base_ver", STATE.version);
+  const data = await api("/api/stations/upload", {method:"POST", body: fd});
+  if (data) { showMsg(`上传完成：新增 ${data.inserted} 站，跳过已存在 ${data.skipped_existing} 站；新统一号：${data.created_unified_ids.join(", ") || "无"}`, true); loadState(); }
+}
+
+async function mergeSelected() {
+  clearMsg();
+  const ids = [...document.querySelectorAll(".mergeCk:checked")].map(c => Number(c.value));
+  if (ids.length < 2) return showMsg("请至少勾选两个当前站再归并", false);
+  if (!confirm("确认归并统一号 " + ids.join(", ") + "？受影响组将分配全新统一号，旧号退役但可追溯。")) return;
+  const data = await postJSON("/api/groups/merge", {unified_ids: ids, base_ver: STATE.version});
+  if (data) { showMsg(`归并完成：旧号 ${data.retired_unified_ids.join(", ")} 退役 → 新统一号 ${data.new_unified_id}（新状态 v${data.version}）`, true); loadState(); }
+}
+
+let splitTarget = null;
+function openSplit(uid) {
+  clearMsg();
+  splitTarget = STATE.groups.find(g => g.unified_id === uid);
+  $("splitCard").style.display = "block";
+  $("splitUid").textContent = uid;
+  $("splitTable").querySelector("tbody").innerHTML = splitTarget.members.map(m => `
+    <tr><td>${esc(m.source)} / <code>${esc(m.source_station_id)}</code> / ${esc(m.name)}
+        <input type="hidden" class="splitPk" value="${m.source_station_pk}"></td>
+    <td><input type="number" class="splitPart" min="1" value="1" style="min-width:90px"></td></tr>`).join("");
+  $("splitCard").scrollIntoView({behavior:"smooth"});
+}
+function cancelSplit() { $("splitCard").style.display = "none"; splitTarget = null; }
+async function submitSplit() {
+  clearMsg();
+  const pks = [...document.querySelectorAll(".splitPk")].map(e => Number(e.value));
+  const parts = [...document.querySelectorAll(".splitPart")].map(e => parseInt(e.value, 10));
+  if (parts.some(n => !Number.isInteger(n) || n < 1)) return showMsg("每个来源站都必须填写 ≥1 的分组编号", false);
+  const groupsMap = {};
+  pks.forEach((pk, i) => (groupsMap[parts[i]] ||= []).push(pk));
+  const partitions = Object.keys(groupsMap).sort((a,b)=>a-b).map(k => groupsMap[k]);
+  if (partitions.length < 2) return showMsg("拆分至少要形成两个新组", false);
+  const data = await postJSON("/api/groups/split", {unified_id: splitTarget.unified_id, partitions, base_ver: STATE.version});
+  if (data) { showMsg(`拆分完成：旧号 ${data.retired_unified_id} 退役 → 新统一号 ${data.new_unified_ids.join(", ")}（新状态 v${data.version}）`, true); cancelSplit(); loadState(); }
+}
+
+function attributionBlock(g) {
+  return `<div class="group-box"><b>统一号 ${g.unified_id}</b>
+    <span class="tag cur">当前</span>${membersText(g.matched_from_original || g.members)}</div>`;
+}
+async function queryUnified() {
+  clearMsg();
+  const uid = parseInt($("qUid").value, 10);
+  if (!uid) return;
+  try {
+    const d = await api(`/api/query/unified/${uid}`);
+    if (!d) return;
+    const g = d.group;
+    $("qUnifiedOut").innerHTML = `
+      <div class="group-box">
+        <b>查询号码 ${uid}</b>
+        <span class="tag ${g.current ? "cur" : "old"}">${g.current ? "当前站" : "已退役旧号"}</span>
+        <div class="muted">产生于 v${g.created_ver}${g.retired_ver ? `，退役于 v${g.retired_ver}` : ""}</div>
+        <div style="margin-top:6px">产生时包含的来源站：</div>${membersText(g.members)}
+      </div>
+      <h3 style="font-size:14px">这些来源站的当前归属${d.ambiguous ? ' <span class="tag amb">⚠ 歧义：跨多个现站</span>' : ""}</h3>
+      ${d.current_attribution.map(attributionBlock).join("") || '<p class="muted">无当前归属</p>'}
+      <p class="muted">${esc(d.ambiguous_note)}</p>`;
+  } catch (e) { showMsg(e.message, false); }
+}
+async function querySource() {
+  clearMsg();
+  try {
+    const d = await api(`/api/query/source?source=${encodeURIComponent($("qSource").value)}&source_station_id=${encodeURIComponent($("qSid").value)}`);
+    if (!d) return;
+    const s = d.source_station;
+    $("qSourceOut").innerHTML = `
+      <div class="group-box">
+        <b>${esc(s.source)} / ${esc(s.source_station_id)}</b>（${esc(s.name)}，登记于 v${s.created_ver}）<br>
+        当前统一号：<b>${d.current_unified_id ?? "无"}</b>
+      </div>
+      <table><thead><tr><th>历史统一号</th><th>状态</th><th>产生版本</th><th>退役版本</th></tr></thead>
+      <tbody>${d.group_history.map(h => `<tr><td><b>${h.unified_id}</b></td>
+        <td><span class="tag ${h.current ? "cur":"old"}">${h.current ? "当前":"已退役"}</span></td>
+        <td>v${h.created_ver}</td><td>${h.retired_ver ? "v"+h.retired_ver : "—"}</td></tr>`).join("")}</tbody></table>`;
+  } catch (e) { showMsg(e.message, false); }
+}
+async function showLineage() {
+  clearMsg();
+  const uid = parseInt($("lineageUid").value, 10);
+  if (!uid) return;
+  try {
+    const d = await api(`/api/groups/lineage/${uid}`);
+    if (!d) return;
+    const edgeText = d.edges.map(e => `${e.from} → ${e.to}`).join("；") || "（无变迁）";
+    $("lineageOut").innerHTML = `
+      <p>上游旧号：${d.ancestor_ids.join(", ") || "无"} ｜ 下游新号：${d.descendant_ids.join(", ") || "无"}</p>
+      <p class="muted">变迁边：${esc(edgeText)}</p>
+      <table><thead><tr><th>统一号</th><th>状态</th><th>来源站</th></tr></thead><tbody>
+      ${d.related_groups.map(g => `<tr><td><b>${g.unified_id}</b></td>
+        <td><span class="tag ${g.current?"cur":"old"}">${g.current?"当前":"已退役"}</span></td>
+        <td>${membersText(g.members)}</td></tr>`).join("")}</tbody></table>`;
+  } catch (e) { showMsg(e.message, false); }
+}
+function quickLineage(uid) {
+  document.querySelector('[data-tab="query"]').click();
+  $("lineageUid").value = uid;
+  showLineage();
+}
+
+async function ingestObs() {
+  clearMsg();
+  const f = $("obsFile").files[0];
+  if (!f) return showMsg("请先选择 CSV 文件", false);
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("base_ver", STATE.version);
+  try {
+    const d = await api("/api/observations/ingest", {method:"POST", body: fd});
+    if (d) { showMsg(`入仓成功：批次 #${d.batch_id}，共 ${d.ingested} 条；采用身份状态 v${d.ingest_ver}；涉及当前统一号 ${d.involved_unified_ids.join(", ")}`, true); loadObs(); }
+  } catch (e) { showMsg(e.message, false); }
+}
+async function loadObs() {
+  clearMsg();
+  const p = new URLSearchParams();
+  if ($("fSource").value) p.set("source", $("fSource").value);
+  if ($("fSid").value) p.set("source_station_id", $("fSid").value);
+  if ($("fUid").value) p.set("unified_id", $("fUid").value);
+  p.set("limit", "200");
+  const d = await api("/api/observations?" + p.toString());
+  if (!d) return;
+  $("obsTable").querySelector("tbody").innerHTML = d.items.map(o => `
+    <tr><td>#${o.batch_id}</td><td>${esc(o.source)} / <code>${esc(o.source_station_id)}</code></td>
+    <td>${esc(o.obs_time)}</td><td>${o.temperature}</td>
+    <td>${o.snapshot_unified_id}</td><td><b>${o.current_unified_id ?? "—"}</b></td>
+    <td>${o.identity_changed ? '<span class="tag amb">已变化</span>' : '<span class="tag cur">一致</span>'}</td>
+    <td>v${o.ingest_ver}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">暂无观测</td></tr>';
+}
+
+async function loadOps() {
+  const d = await api("/api/operations");
+  if (!d) return;
+  const kindName = {upload:"上传来源站", merge:"归并", split:"拆分"};
+  $("opsTable").querySelector("tbody").innerHTML = d.operations.map(op => `
+    <tr><td>${op.op_id}</td><td>${kindName[op.kind] || op.kind}</td>
+    <td class="small">${esc(op.created_at)}</td>
+    <td>v${op.from_ver} → v${op.to_ver}</td>
+    <td class="small"><pre style="margin:0;white-space:pre-wrap">${esc(JSON.stringify(op.detail, null, 1))}</pre></td></tr>`).join("");
+}
+
+document.querySelectorAll("nav button").forEach(btn => btn.addEventListener("click", () => {
+  clearMsg();
+  document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+  btn.classList.add("active");
+  $("panel-" + btn.dataset.tab).classList.add("active");
+  if (btn.dataset.tab === "obs") loadObs();
+  if (btn.dataset.tab === "ops") loadOps();
+  if (btn.dataset.tab === "state") loadState();
+}));
+
+loadState();
+</script>
+</body>
+</html>
